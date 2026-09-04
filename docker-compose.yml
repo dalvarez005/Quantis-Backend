@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: quantis-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-quantis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-quantis_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-quantis}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - quantis_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-quantis} -d ${POSTGRES_DB:-quantis}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    container_name: quantis-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${API_PORT:-5000}:5000"
+    env_file:
+      - .env
+    environment:
+      # Siempre host "postgres" (red de Compose). No usar ${DATABASE_URL} del .env: suele ser localhost y falla dentro del contenedor.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-quantis}:${POSTGRES_PASSWORD:-quantis_dev}@postgres:5432/${POSTGRES_DB:-quantis}
+      PORT: "5000"
+    # Sin migraciones automáticas al levantar el contenedor.
+    command: ["node", "server.js"]
+
+volumes:
+  quantis_pg_data:
