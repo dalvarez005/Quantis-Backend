@@ -13,7 +13,7 @@ IMAGE="quantis-backend-api:latest"
 TARBALL="quantis-backend-api.tar.gz"
 
 echo "==> Building $IMAGE for linux/arm64"
-docker compose build --platform linux/arm64 api
+DOCKER_DEFAULT_PLATFORM=linux/arm64 docker compose build api
 
 echo "==> Saving image to $TARBALL"
 docker save "$IMAGE" | gzip > "$TARBALL"
