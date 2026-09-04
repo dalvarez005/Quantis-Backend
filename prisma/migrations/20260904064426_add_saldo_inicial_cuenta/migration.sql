@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "cuentas" ADD COLUMN     "saldoInicial" DOUBLE PRECISION NOT NULL DEFAULT 0;

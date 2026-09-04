@@ -23,7 +23,11 @@ const cuentaCreateValidation = [
     .withMessage('El nombre debe tener entre 1 y 100 caracteres'),
   body('moneda')
     .isIn(['GTQ', 'USD'])
-    .withMessage('La moneda debe ser GTQ o USD')
+    .withMessage('La moneda debe ser GTQ o USD'),
+  body('saldoInicial')
+    .optional({ values: 'null' })
+    .isNumeric()
+    .withMessage('El saldo inicial debe ser un número')
 ];
 
 const cuentaUpdateValidation = [
@@ -41,7 +45,11 @@ const cuentaUpdateValidation = [
   body('esActiva')
     .optional()
     .isBoolean()
-    .withMessage('esActiva debe ser true o false')
+    .withMessage('esActiva debe ser true o false'),
+  body('saldoInicial')
+    .optional({ values: 'null' })
+    .isNumeric()
+    .withMessage('El saldo inicial debe ser un número')
 ];
 
 const queryValidation = [
