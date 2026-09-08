@@ -83,6 +83,7 @@ model Cuenta {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   nombre    String
   moneda    String
+  saldoInicial Float @default(0)
   esActiva  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -58,12 +58,13 @@ async function getCuentaById(id, userId) {
   return cuentaRepo.findByIdForUser(id, userId);
 }
 
-async function createCuenta(userId, { id, nombre, moneda }) {
+async function createCuenta(userId, { id, nombre, moneda, saldoInicial }) {
   return cuentaRepo.create({
     id,
     userId,
     nombre,
     moneda,
+    saldoInicial: saldoInicial != null ? Number(saldoInicial) : 0,
     esActiva: true
   });
 }

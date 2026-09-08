@@ -171,7 +171,11 @@ const pagoCuotaValidation = [
     .optional()
     .trim()
     .isLength({ max: 200 })
-    .withMessage('La nota no puede exceder 200 caracteres')
+    .withMessage('La nota no puede exceder 200 caracteres'),
+  body('sinDebitar')
+    .optional()
+    .isBoolean()
+    .withMessage('sinDebitar debe ser verdadero o falso')
 ];
 
 // Validaciones para consultas

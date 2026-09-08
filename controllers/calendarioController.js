@@ -2,7 +2,6 @@ const prisma = require('../src/adapters/persistence/prismaClient');
 const {
   obtenerRangoMensual,
   calcularProximaFecha,
-  calcularFechasEntre,
   obtenerFechasCuotaParaCalendario
 } = require('../utils/fechaUtils');
 
@@ -83,7 +82,9 @@ const getEventosMes = async (req, res) => {
     const cuotas = await prisma.cuota.findMany({
       where: {
         userId,
-        estado: { in: ['activa', 'vencida'] }
+        // Incluye 'pagada': un plan completado debe seguir viéndose en meses pasados
+        // (y futuros, si se pagó por adelantado) con sus cuotas marcadas como pagadas.
+        estado: { in: ['activa', 'vencida', 'pagada'] }
       },
       select: {
         id: true,
@@ -111,27 +112,7 @@ const getEventosMes = async (req, res) => {
     for (const cuota of cuotas) {
       let items = [];
       try {
-        if ((cuota.cuotasPagadas || 0) > 0) {
-          items = obtenerFechasCuotaParaCalendario(cuota);
-        } else {
-          const diaPago = cuota.fechaInicio
-            ? new Date(cuota.fechaInicio).getDate()
-            : null;
-          const diaSemana = cuota.fechaInicio
-            ? new Date(cuota.fechaInicio).getDay()
-            : null;
-          const fechasPago = calcularFechasEntre(
-            cuota.fechaInicio,
-            cuota.fechaVencimiento,
-            cuota.frecuenciaPago,
-            diaPago,
-            diaSemana
-          );
-          const total = Math.min(cuota.cuotasTotal || 1, fechasPago.length, 48);
-          for (let i = 0; i < total; i++) {
-            items.push({ fecha: fechasPago[i], numeroCuota: i + 1 });
-          }
-        }
+        items = obtenerFechasCuotaParaCalendario(cuota);
       } catch (e) {
         continue;
       }
