@@ -2,7 +2,9 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const session = require('express-session');
-require('dotenv').config();
+require('dotenv').config({
+  path: process.env.NODE_ENV === 'production' ? '.env' : '.env.development'
+});
 
 // Importar configuración de base de datos
 const connectDB = require('./config/database');

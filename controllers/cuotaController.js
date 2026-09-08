@@ -374,7 +374,8 @@ const pagarCuota = async (req, res) => {
 
     const { id } = req.params;
     const userId = req.user._id;
-    const { monto, fecha, nota } = req.body;
+    const { monto, fecha, nota, sinDebitar } = req.body;
+    const noDebitar = sinDebitar === true || sinDebitar === 'true';
 
     let cuota = await prisma.cuota.findFirst({
       where: { id, userId }
@@ -423,7 +424,8 @@ const pagarCuota = async (req, res) => {
         fecha: fechaPago,
         monto: montoPago,
         numeroCuota,
-        nota: (nota || '').trim() ? nota : 'Pago completo'
+        nota: (nota || '').trim() ? nota : 'Pago completo',
+        sinDebitar: noDebitar
       });
       cuota = await prisma.cuota.update({
         where: { id: cuota.id },
@@ -440,7 +442,8 @@ const pagarCuota = async (req, res) => {
         fecha: fechaPago,
         monto: montoPago,
         numeroCuota,
-        nota: nota || ''
+        nota: nota || '',
+        sinDebitar: noDebitar
       });
       let prox = cuota.proximoPago;
       if (numeroCuota < cuota.cuotasTotal) {
@@ -466,7 +469,7 @@ const pagarCuota = async (req, res) => {
       data: { estado: merged.estado }
     });
 
-    if (cuota.crearGastoAutomatico !== false) {
+    if (cuota.crearGastoAutomatico !== false && !noDebitar) {
       try {
         const g = await prisma.gasto.create({
           data: {
@@ -494,7 +497,9 @@ const pagarCuota = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Pago registrado exitosamente',
+      message: noDebitar
+        ? 'Cuota marcada como pagada sin afectar tu balance'
+        : 'Pago registrado exitosamente',
       data: { cuota: serializeCuota(cuota, await tarjetaMini(cuota.tarjetaId)) }
     });
   } catch (error) {

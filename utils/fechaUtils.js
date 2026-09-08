@@ -261,23 +261,14 @@ function fechaUltimaCuotaDesdeProximo(proximo, frecuencia, restantes) {
 
 /**
  * Fechas de cuotas para calendario: misma serie que con 0 pagadas (fechaInicio → fechaVencimiento),
- * priorizando fecha real en historialPagos por número de cuota. Así aparecen cuotas pasadas estimadas
- * aunque no exista movimiento en historial, y las futuras aunque proximoPago no venga en el select.
+ * siempre según el ciclo de pago de la tarjeta (no la fecha real en que se registró el pago).
+ * Así cada cuota queda fija en su día de pago mensual, hacia atrás y hacia adelante, sin importar
+ * si se pagó puntual, atrasada o por adelantado (p. ej. "marcar como pagada sin debitar").
  */
 function obtenerFechasCuotaParaCalendario(cuota) {
   const total = Math.min(Math.max(1, cuota.cuotasTotal || 1), 48);
   if (!cuota.fechaInicio || !cuota.fechaVencimiento) {
     return [];
-  }
-  const historial = Array.isArray(cuota.historialPagos) ? cuota.historialPagos : [];
-  const byNum = new Map();
-  for (const h of historial) {
-    if (h && typeof h.numeroCuota === 'number' && h.fecha) {
-      const d = new Date(h.fecha);
-      if (!Number.isNaN(d.getTime())) {
-        byNum.set(h.numeroCuota, d);
-      }
-    }
   }
   const diaPago = new Date(cuota.fechaInicio).getDate();
   const diaSemana = new Date(cuota.fechaInicio).getDay();
@@ -292,9 +283,7 @@ function obtenerFechasCuotaParaCalendario(cuota) {
   const out = [];
   for (let i = 0; i < n; i++) {
     const numeroCuota = i + 1;
-    const dHist = byNum.get(numeroCuota);
-    const dSynth = fechasPago[i];
-    const fecha = dHist || dSynth;
+    const fecha = fechasPago[i];
     if (!fecha) continue;
     const copy = new Date(fecha);
     copy.setHours(0, 0, 0, 0);

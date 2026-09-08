@@ -83,7 +83,9 @@ const getEventosMes = async (req, res) => {
     const cuotas = await prisma.cuota.findMany({
       where: {
         userId,
-        estado: { in: ['activa', 'vencida'] }
+        // Incluye 'pagada': un plan completado debe seguir viéndose en meses pasados
+        // (y futuros, si se pagó por adelantado) con sus cuotas marcadas como pagadas.
+        estado: { in: ['activa', 'vencida', 'pagada'] }
       },
       select: {
         id: true,
