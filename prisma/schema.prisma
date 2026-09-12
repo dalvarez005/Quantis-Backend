@@ -28,8 +28,6 @@ model User {
   profileImageData       Bytes?
   profileImageContentType String?
   currency               String   @default("GTQ") // GTQ | USD
-  /** Cuenta sugerida para ingresos/gastos si no se elige otra (validar en app) */
-  cuentaDefaultId      String?  @db.VarChar(24)
   isActive               Boolean  @default(true)
   role                   UserRole @default(USER)
   createdAt              DateTime @default(now())
@@ -134,12 +132,16 @@ model Gasto {
   cuotaId          String?  @db.VarChar(24)
   cuota            Cuota?   @relation(fields: [cuotaId], references: [id], onDelete: SetNull)
   numeroCuotaPago  Int?
+  tarjetaId        String?  @db.VarChar(24)
+  tarjeta          Tarjeta? @relation(fields: [tarjetaId], references: [id], onDelete: SetNull)
+  esPagoTarjeta    Boolean  @default(false)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
   @@index([userId, fecha(sort: Desc)])
   @@index([userId, cuentaId, fecha(sort: Desc)])
   @@index([userId, categoria])
+  @@index([userId, tarjetaId, fecha(sort: Desc)])
   @@map("gastos")
 }
 
@@ -164,6 +166,7 @@ model Tarjeta {
   updatedAt          DateTime @updatedAt
 
   cuotas Cuota[]
+  gastos Gasto[]
 
   @@index([userId, tipo])
   @@index([userId, esActiva])

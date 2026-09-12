@@ -57,11 +57,25 @@ async function generarIngresosRecurrentes(ingresoRecurrente, hastaFecha = null) 
     if (!existeTransaccion) {
       let cuentaId = ingresoRecurrente.cuentaId || null;
       if (!cuentaId) {
-        cuentaId = await resolveCuentaIdForMovimiento(
-          ingresoRecurrente.userId,
-          null,
-          ingresoRecurrente.moneda
-        );
+        try {
+          cuentaId = await resolveCuentaIdForMovimiento(
+            ingresoRecurrente.userId,
+            null,
+            ingresoRecurrente.moneda
+          );
+        } catch (err) {
+          if (err.isCuentaRequerida) {
+            // Sin cuenta en esa moneda y no es la principal del usuario: no
+            // se puede generar este ingreso recurrente ni los siguientes
+            // períodos (misma causa). No se marca como generado, para que
+            // se reintente solo si el usuario crea la cuenta.
+            console.warn(
+              `Recurrencia ${ingresoRecurrente.id}: ${err.message}`
+            );
+            break;
+          }
+          throw err;
+        }
       }
       const nuevoIngreso = await prisma.ingreso.create({
         data: {
@@ -166,11 +180,25 @@ async function generarGastosRecurrentes(gastoRecurrente, hastaFecha = null) {
     if (!existeTransaccion) {
       let cuentaId = gastoRecurrente.cuentaId || null;
       if (!cuentaId) {
-        cuentaId = await resolveCuentaIdForMovimiento(
-          gastoRecurrente.userId,
-          null,
-          gastoRecurrente.moneda
-        );
+        try {
+          cuentaId = await resolveCuentaIdForMovimiento(
+            gastoRecurrente.userId,
+            null,
+            gastoRecurrente.moneda
+          );
+        } catch (err) {
+          if (err.isCuentaRequerida) {
+            // Sin cuenta en esa moneda y no es la principal del usuario: no
+            // se puede generar este gasto recurrente ni los siguientes
+            // períodos (misma causa). No se marca como generado, para que
+            // se reintente solo si el usuario crea la cuenta.
+            console.warn(
+              `Recurrencia ${gastoRecurrente.id}: ${err.message}`
+            );
+            break;
+          }
+          throw err;
+        }
       }
       const nuevoGasto = await prisma.gasto.create({
         data: {

@@ -2,8 +2,29 @@ const prisma = require('../src/adapters/persistence/prismaClient');
 const {
   obtenerRangoMensual,
   calcularProximaFecha,
-  obtenerFechasCuotaParaCalendario
+  obtenerFechasCuotaParaCalendario,
+  cicloDeCorte
 } = require('../utils/fechaUtils');
+
+/**
+ * Ciclo de facturación que efectivamente se cobra en un pago dado: el corte
+ * casi siempre cae antes del día de pago (incluso cruzando de mes), así que
+ * se retrocede desde la fecha de pago hasta encontrar el primer ciclo cuyo
+ * cierre (fin) sea <= esa fecha. Mismo patrón que usa getResumenTarjeta.
+ */
+function cicloQueAlimentaPago(fechaPagoYMD, fechaCorte) {
+  let cursorStr = fechaPagoYMD;
+  for (let i = 0; i < 3; i++) {
+    const { inicio, fin } = cicloDeCorte(cursorStr, fechaCorte);
+    if (fin.toISOString().slice(0, 10) <= fechaPagoYMD) {
+      return { inicio, fin };
+    }
+    const antes = new Date(inicio);
+    antes.setDate(antes.getDate() - 1);
+    cursorStr = antes.toISOString().slice(0, 10);
+  }
+  return null;
+}
 
 const getEventosMes = async (req, res) => {
   try {
@@ -58,6 +79,7 @@ const getEventosMes = async (req, res) => {
         id: true,
         nombre: true,
         diaPago: true,
+        fechaCorte: true,
         saldoActual: true,
         limiteCredito: true,
         moneda: true
@@ -185,11 +207,9 @@ const getEventosMes = async (req, res) => {
     const tarjetasEventos = [];
     for (const tarjeta of tarjetas) {
       if (tarjeta.diaPago) {
-        const fechaPago = new Date(
-          parseInt(año, 10),
-          parseInt(mes, 10) - 1,
-          tarjeta.diaPago
-        );
+        const añoNum = parseInt(año, 10);
+        const mesNum = parseInt(mes, 10);
+        const fechaPago = new Date(añoNum, mesNum - 1, tarjeta.diaPago);
         if (fechaPago >= rango.inicio && fechaPago <= rango.fin) {
           const fechaKey = fechaPago.toISOString().split('T')[0];
           const rawList = cuotasPorFechaTarjeta.get(fechaKey) || [];
@@ -220,9 +240,53 @@ const getEventosMes = async (req, res) => {
             (sum, c) => sum + (c.montoCuota || 0),
             0
           );
+
+          // Gastos sueltos (no ligados a un plan de cuotas) hechos con esta
+          // tarjeta durante el ciclo de facturación que corresponde a este
+          // pago - antes no se incluían, así que "Pago tarjeta" solo mostraba
+          // las cuotas y dejaba afuera compras sueltas a crédito.
+          let sueltosEnCiclo = [];
+          let montoSueltosEnCiclo = 0;
+          let cantidadSueltosEnCiclo = 0;
+          let cicloInicio = null;
+          let cicloFin = null;
+          if (tarjeta.fechaCorte) {
+            const fechaPagoYMD = `${añoNum}-${String(mesNum).padStart(2, '0')}-${String(tarjeta.diaPago).padStart(2, '0')}`;
+            const ciclo = cicloQueAlimentaPago(fechaPagoYMD, tarjeta.fechaCorte);
+            if (ciclo) {
+              cicloInicio = ciclo.inicio;
+              cicloFin = ciclo.fin;
+              const inicioDia = new Date(ciclo.inicio);
+              inicioDia.setHours(0, 0, 0, 0);
+              const finDia = new Date(ciclo.fin);
+              finDia.setHours(23, 59, 59, 999);
+              const sueltos = await prisma.gasto.findMany({
+                where: {
+                  userId,
+                  tarjetaId: tarjeta.id,
+                  cuotaId: null,
+                  esPagoTarjeta: false,
+                  fecha: { gte: inicioDia, lte: finDia }
+                },
+                orderBy: { fecha: 'asc' },
+                select: { id: true, monto: true, moneda: true, categoria: true, descripcion: true, fecha: true }
+              });
+              sueltosEnCiclo = sueltos.map((g) => ({
+                gastoId: g.id,
+                monto: g.monto,
+                moneda: g.moneda,
+                categoria: g.categoria,
+                descripcion: g.descripcion,
+                fecha: g.fecha
+              }));
+              montoSueltosEnCiclo = sueltos.reduce((s, g) => s + g.monto, 0);
+              cantidadSueltosEnCiclo = sueltos.length;
+            }
+          }
+
           const saldoActual = tarjeta.saldoActual || 0;
           const tienePagosPendientes =
-            listaCuotas.length > 0 || Number(saldoActual) > 0;
+            listaCuotas.length > 0 || montoSueltosEnCiclo > 0 || Number(saldoActual) > 0;
           if (!tienePagosPendientes) continue;
           const fechaPasada = fechaPago < hoyInicio;
           const todasCuotasPagadas =
@@ -236,6 +300,11 @@ const getEventosMes = async (req, res) => {
             tarjetaId: tarjeta.id,
             cuotasEnFecha: listaCuotas,
             totalCuotasEnFecha: totalCuotasEnFecha,
+            sueltosEnCiclo,
+            montoSueltosEnCiclo,
+            cantidadSueltosEnCiclo,
+            cicloInicio,
+            cicloFin,
             fechaPasada,
             todasCuotasPagadas
           });
@@ -435,6 +504,11 @@ const getEventosMes = async (req, res) => {
         tarjetaId: evento.tarjetaId,
         cuotasEnFecha: evento.cuotasEnFecha || [],
         totalCuotasEnFecha: evento.totalCuotasEnFecha || 0,
+        sueltosEnCiclo: evento.sueltosEnCiclo || [],
+        montoSueltosEnCiclo: evento.montoSueltosEnCiclo || 0,
+        cantidadSueltosEnCiclo: evento.cantidadSueltosEnCiclo || 0,
+        cicloInicio: evento.cicloInicio || null,
+        cicloFin: evento.cicloFin || null,
         fechaPasada: evento.fechaPasada,
         todasCuotasPagadas: evento.todasCuotasPagadas
       });

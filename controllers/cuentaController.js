@@ -95,12 +95,14 @@ const updateCuenta = async (req, res) => {
     for (const k of allowed) {
       if (req.body[k] !== undefined) data[k] = req.body[k];
     }
+
     if (Object.keys(data).length === 0) {
       return res.status(400).json({
         success: false,
         message: 'No hay datos para actualizar'
       });
     }
+
     const row = await cuentaUseCases.updateCuenta(id, userId, data);
     if (!row) {
       return res.status(404).json({
@@ -108,6 +110,7 @@ const updateCuenta = async (req, res) => {
         message: 'Cuenta no encontrada'
       });
     }
+
     res.json({
       success: true,
       message: 'Cuenta actualizada exitosamente',
@@ -126,8 +129,39 @@ const deleteCuenta = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user._id;
-    const row = await cuentaUseCases.softDeleteCuenta(id, userId);
-    if (!row) {
+    const result = await cuentaUseCases.softDeleteCuenta(id, userId);
+    if (!result) {
+      return res.status(404).json({
+        success: false,
+        message: 'Cuenta no encontrada'
+      });
+    }
+    const { cuenta, gastosEliminados, ingresosEliminados } = result;
+    res.json({
+      success: true,
+      message: 'Cuenta eliminada exitosamente',
+      data: {
+        cuenta: serializeCuenta(cuenta),
+        gastosEliminados,
+        ingresosEliminados
+      }
+    });
+  } catch (error) {
+    console.error('Error eliminando cuenta:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+};
+
+/** Cuántos gastos/ingresos se perderían si se elimina esta cuenta (para confirmar antes de borrar). */
+const getCuentaMovimientosCount = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+    const counts = await cuentaUseCases.contarMovimientosDeCuenta(id, userId);
+    if (!counts) {
       return res.status(404).json({
         success: false,
         message: 'Cuenta no encontrada'
@@ -135,11 +169,10 @@ const deleteCuenta = async (req, res) => {
     }
     res.json({
       success: true,
-      message: 'Cuenta desactivada exitosamente',
-      data: { cuenta: serializeCuenta(row) }
+      data: counts
     });
   } catch (error) {
-    console.error('Error desactivando cuenta:', error);
+    console.error('Error contando movimientos de la cuenta:', error);
     res.status(500).json({
       success: false,
       message: 'Error interno del servidor'
@@ -243,5 +276,6 @@ module.exports = {
   getCuentasBalances,
   createCuenta,
   updateCuenta,
-  deleteCuenta
+  deleteCuenta,
+  getCuentaMovimientosCount
 };

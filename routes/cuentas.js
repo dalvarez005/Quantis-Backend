@@ -6,7 +6,8 @@ const {
   getCuentasBalances,
   createCuenta,
   updateCuenta,
-  deleteCuenta
+  deleteCuenta,
+  getCuentaMovimientosCount
 } = require('../controllers/cuentaController');
 const auth = require('../middleware/auth');
 
@@ -65,6 +66,7 @@ const queryValidation = [
 
 router.get('/', queryValidation, getCuentas);
 router.get('/balances', getCuentasBalances);
+router.get('/:id/movimientos-count', getCuentaMovimientosCount);
 router.get('/:id', getCuentaById);
 router.post('/', cuentaCreateValidation, createCuenta);
 router.put('/:id', cuentaUpdateValidation, updateCuenta);

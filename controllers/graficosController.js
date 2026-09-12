@@ -1,96 +1,81 @@
 const prisma = require('../src/adapters/persistence/prismaClient');
+const { Prisma } = require('@prisma/client');
 const { obtenerRangoMensual } = require('../utils/fechaUtils');
 const { cuotaProgresoPago } = require('../src/domain/prestamoCuota');
+
+/**
+ * Condiciones SQL comunes (además de userId) para los endpoints de gráficos:
+ * rango de fechas (fechaInicio/fechaFin tiene prioridad sobre mes/año),
+ * moneda, y cuenta (cuentaId > sinCuenta, igual que en gastoController).
+ * Devuelve un arreglo de fragmentos Prisma.sql para unir con AND.
+ */
+function condicionesGrafico({ mes, año, fechaInicio, fechaFin, moneda, cuentaId, sinCuenta }) {
+  const condiciones = [];
+  if (fechaInicio || fechaFin) {
+    if (fechaInicio) {
+      const d = new Date(fechaInicio);
+      d.setHours(0, 0, 0, 0);
+      condiciones.push(Prisma.sql`fecha >= ${d}`);
+    }
+    if (fechaFin) {
+      const d = new Date(fechaFin);
+      d.setHours(23, 59, 59, 999);
+      condiciones.push(Prisma.sql`fecha <= ${d}`);
+    }
+  } else if (mes && año) {
+    const rango = obtenerRangoMensual(parseInt(año, 10), parseInt(mes, 10));
+    condiciones.push(Prisma.sql`fecha >= ${rango.inicio}`);
+    condiciones.push(Prisma.sql`fecha <= ${rango.fin}`);
+  }
+  if (moneda) condiciones.push(Prisma.sql`moneda = ${moneda}`);
+  if (cuentaId) {
+    condiciones.push(Prisma.sql`"cuentaId" = ${String(cuentaId)}`);
+  } else if (String(sinCuenta).toLowerCase() === 'true') {
+    condiciones.push(Prisma.sql`"cuentaId" IS NULL`);
+  }
+  return condiciones;
+}
+
+/** WHERE completo (userId + condicionesGrafico) listo para interpolar en un $queryRaw. */
+function whereGrafico(userId, filtros) {
+  const extra = condicionesGrafico(filtros);
+  if (extra.length === 0) return Prisma.sql`WHERE "userId" = ${userId}`;
+  return Prisma.sql`WHERE "userId" = ${userId} AND ${Prisma.join(extra, ' AND ')}`;
+}
+
+function periodoLabel({ mes, año, fechaInicio, fechaFin }) {
+  if (fechaInicio || fechaFin) return `${fechaInicio || '-'} a ${fechaFin || '-'}`;
+  if (mes && año) return `${mes}/${año}`;
+  return 'Todos los períodos';
+}
 
 const getIngresosGastos = async (req, res) => {
   try {
     const userId = req.user._id;
-    const { mes, año, moneda } = req.query;
+    const whereIngresos = whereGrafico(userId, req.query);
+    const whereGastos = whereGrafico(userId, req.query);
 
-    let ingresos;
-    let gastos;
-
-    if (mes && año) {
-      const rango = obtenerRangoMensual(parseInt(año, 10), parseInt(mes, 10));
-      if (moneda) {
-        ingresos = await prisma.$queryRaw`
-          SELECT to_char(date_trunc('day', fecha), 'YYYY-MM-DD') as "_id",
-                 sum(monto)::float as total,
-                 min(moneda) as moneda
-          FROM ingresos
-          WHERE "userId" = ${userId}
-            AND fecha >= ${rango.inicio}
-            AND fecha <= ${rango.fin}
-            AND moneda = ${moneda}
-          GROUP BY 1 ORDER BY 1`;
-        gastos = await prisma.$queryRaw`
-          SELECT to_char(date_trunc('day', fecha), 'YYYY-MM-DD') as "_id",
-                 sum(monto)::float as total,
-                 min(moneda) as moneda
-          FROM gastos
-          WHERE "userId" = ${userId}
-            AND fecha >= ${rango.inicio}
-            AND fecha <= ${rango.fin}
-            AND moneda = ${moneda}
-          GROUP BY 1 ORDER BY 1`;
-      } else {
-        ingresos = await prisma.$queryRaw`
-          SELECT to_char(date_trunc('day', fecha), 'YYYY-MM-DD') as "_id",
-                 sum(monto)::float as total,
-                 min(moneda) as moneda
-          FROM ingresos
-          WHERE "userId" = ${userId}
-            AND fecha >= ${rango.inicio}
-            AND fecha <= ${rango.fin}
-          GROUP BY 1 ORDER BY 1`;
-        gastos = await prisma.$queryRaw`
-          SELECT to_char(date_trunc('day', fecha), 'YYYY-MM-DD') as "_id",
-                 sum(monto)::float as total,
-                 min(moneda) as moneda
-          FROM gastos
-          WHERE "userId" = ${userId}
-            AND fecha >= ${rango.inicio}
-            AND fecha <= ${rango.fin}
-          GROUP BY 1 ORDER BY 1`;
-      }
-    } else if (moneda) {
-      ingresos = await prisma.$queryRaw`
-        SELECT to_char(date_trunc('day', fecha), 'YYYY-MM-DD') as "_id",
-               sum(monto)::float as total,
-               min(moneda) as moneda
-        FROM ingresos
-        WHERE "userId" = ${userId} AND moneda = ${moneda}
-        GROUP BY 1 ORDER BY 1`;
-      gastos = await prisma.$queryRaw`
-        SELECT to_char(date_trunc('day', fecha), 'YYYY-MM-DD') as "_id",
-               sum(monto)::float as total,
-               min(moneda) as moneda
-        FROM gastos
-        WHERE "userId" = ${userId} AND moneda = ${moneda}
-        GROUP BY 1 ORDER BY 1`;
-    } else {
-      ingresos = await prisma.$queryRaw`
-        SELECT to_char(date_trunc('day', fecha), 'YYYY-MM-DD') as "_id",
-               sum(monto)::float as total,
-               min(moneda) as moneda
-        FROM ingresos
-        WHERE "userId" = ${userId}
-        GROUP BY 1 ORDER BY 1`;
-      gastos = await prisma.$queryRaw`
-        SELECT to_char(date_trunc('day', fecha), 'YYYY-MM-DD') as "_id",
-               sum(monto)::float as total,
-               min(moneda) as moneda
-        FROM gastos
-        WHERE "userId" = ${userId}
-        GROUP BY 1 ORDER BY 1`;
-    }
+    const ingresos = await prisma.$queryRaw`
+      SELECT to_char(date_trunc('day', fecha), 'YYYY-MM-DD') as "_id",
+             sum(monto)::float as total,
+             min(moneda) as moneda
+      FROM ingresos
+      ${whereIngresos}
+      GROUP BY 1 ORDER BY 1`;
+    const gastos = await prisma.$queryRaw`
+      SELECT to_char(date_trunc('day', fecha), 'YYYY-MM-DD') as "_id",
+             sum(monto)::float as total,
+             min(moneda) as moneda
+      FROM gastos
+      ${whereGastos}
+      GROUP BY 1 ORDER BY 1`;
 
     res.json({
       success: true,
       data: {
         ingresos,
         gastos,
-        periodo: mes && año ? `${mes}/${año}` : 'Todos los períodos'
+        periodo: periodoLabel(req.query)
       }
     });
   } catch (error) {
@@ -105,60 +90,22 @@ const getIngresosGastos = async (req, res) => {
 const getGastosCategoria = async (req, res) => {
   try {
     const userId = req.user._id;
-    const { mes, año, moneda } = req.query;
+    const where = whereGrafico(userId, req.query);
 
-    let rows;
-    if (mes && año) {
-      const rango = obtenerRangoMensual(parseInt(año, 10), parseInt(mes, 10));
-      if (moneda) {
-        rows = await prisma.$queryRaw`
-          SELECT categoria as "_id",
-                 sum(monto)::float as total,
-                 count(*)::int as cantidad,
-                 min(moneda) as moneda
-          FROM gastos
-          WHERE "userId" = ${userId}
-            AND fecha >= ${rango.inicio}
-            AND fecha <= ${rango.fin}
-            AND moneda = ${moneda}
-          GROUP BY categoria ORDER BY total DESC`;
-      } else {
-        rows = await prisma.$queryRaw`
-          SELECT categoria as "_id",
-                 sum(monto)::float as total,
-                 count(*)::int as cantidad,
-                 min(moneda) as moneda
-          FROM gastos
-          WHERE "userId" = ${userId}
-            AND fecha >= ${rango.inicio}
-            AND fecha <= ${rango.fin}
-          GROUP BY categoria ORDER BY total DESC`;
-      }
-    } else if (moneda) {
-      rows = await prisma.$queryRaw`
-        SELECT categoria as "_id",
-               sum(monto)::float as total,
-               count(*)::int as cantidad,
-               min(moneda) as moneda
-        FROM gastos
-        WHERE "userId" = ${userId} AND moneda = ${moneda}
-        GROUP BY categoria ORDER BY total DESC`;
-    } else {
-      rows = await prisma.$queryRaw`
-        SELECT categoria as "_id",
-               sum(monto)::float as total,
-               count(*)::int as cantidad,
-               min(moneda) as moneda
-        FROM gastos
-        WHERE "userId" = ${userId}
-        GROUP BY categoria ORDER BY total DESC`;
-    }
+    const rows = await prisma.$queryRaw`
+      SELECT categoria as "_id",
+             sum(monto)::float as total,
+             count(*)::int as cantidad,
+             min(moneda) as moneda
+      FROM gastos
+      ${where}
+      GROUP BY categoria ORDER BY total DESC`;
 
     res.json({
       success: true,
       data: {
         categorias: rows,
-        periodo: mes && año ? `${mes}/${año}` : 'Todos los períodos'
+        periodo: periodoLabel(req.query)
       }
     });
   } catch (error) {
@@ -170,58 +117,74 @@ const getGastosCategoria = async (req, res) => {
   }
 };
 
+/**
+ * Gastos agrupados por método de pago (efectivo/débito vs. tarjeta de
+ * crédito) del período - para saber cuánto de lo gastado salió de una cuenta
+ * ya mismo vs. cuánto quedó pendiente en la tarjeta. Excluye los pagos a
+ * tarjeta (esPagoTarjeta): esos no son un gasto nuevo, ya se contaron cuando
+ * se hizo la compra a crédito (mismo criterio que getResumenGastos).
+ */
+const getGastosMetodoPago = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const where = whereGrafico(userId, req.query);
+
+    const rows = await prisma.$queryRaw`
+      SELECT "metodoPago" as "_id",
+             sum(monto)::float as total,
+             count(*)::int as cantidad,
+             min(moneda) as moneda
+      FROM gastos
+      ${where} AND "esPagoTarjeta" = false
+      GROUP BY "metodoPago" ORDER BY total DESC`;
+
+    res.json({
+      success: true,
+      data: {
+        metodos: rows,
+        periodo: periodoLabel(req.query)
+      }
+    });
+  } catch (error) {
+    console.error('Error obteniendo gastos por método de pago:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+};
+
 const getEvolucion = async (req, res) => {
   try {
     const userId = req.user._id;
-    const { meses = 6, moneda } = req.query;
+    const { meses = 6, moneda, cuentaId, sinCuenta } = req.query;
 
     const fechaInicio = new Date();
     fechaInicio.setMonth(fechaInicio.getMonth() - parseInt(meses, 10));
     fechaInicio.setDate(1);
     fechaInicio.setHours(0, 0, 0, 0);
 
-    let ingresosMensuales;
-    let gastosMensuales;
+    const extra = condicionesGrafico({ moneda, cuentaId, sinCuenta });
+    const filtroExtra = extra.length ? Prisma.sql`AND ${Prisma.join(extra, ' AND ')}` : Prisma.empty;
 
-    if (moneda) {
-      ingresosMensuales = await prisma.$queryRaw`
-        SELECT date_part('year', fecha)::int as y,
-               date_part('month', fecha)::int as m,
-               sum(monto)::float as total,
-               count(*)::int as cantidad,
-               min(moneda) as moneda
-        FROM ingresos
-        WHERE "userId" = ${userId} AND fecha >= ${fechaInicio} AND moneda = ${moneda}
-        GROUP BY 1, 2 ORDER BY 1, 2`;
-      gastosMensuales = await prisma.$queryRaw`
-        SELECT date_part('year', fecha)::int as y,
-               date_part('month', fecha)::int as m,
-               sum(monto)::float as total,
-               count(*)::int as cantidad,
-               min(moneda) as moneda
-        FROM gastos
-        WHERE "userId" = ${userId} AND fecha >= ${fechaInicio} AND moneda = ${moneda}
-        GROUP BY 1, 2 ORDER BY 1, 2`;
-    } else {
-      ingresosMensuales = await prisma.$queryRaw`
-        SELECT date_part('year', fecha)::int as y,
-               date_part('month', fecha)::int as m,
-               sum(monto)::float as total,
-               count(*)::int as cantidad,
-               min(moneda) as moneda
-        FROM ingresos
-        WHERE "userId" = ${userId} AND fecha >= ${fechaInicio}
-        GROUP BY 1, 2 ORDER BY 1, 2`;
-      gastosMensuales = await prisma.$queryRaw`
-        SELECT date_part('year', fecha)::int as y,
-               date_part('month', fecha)::int as m,
-               sum(monto)::float as total,
-               count(*)::int as cantidad,
-               min(moneda) as moneda
-        FROM gastos
-        WHERE "userId" = ${userId} AND fecha >= ${fechaInicio}
-        GROUP BY 1, 2 ORDER BY 1, 2`;
-    }
+    const ingresosMensuales = await prisma.$queryRaw`
+      SELECT date_part('year', fecha)::int as y,
+             date_part('month', fecha)::int as m,
+             sum(monto)::float as total,
+             count(*)::int as cantidad,
+             min(moneda) as moneda
+      FROM ingresos
+      WHERE "userId" = ${userId} AND fecha >= ${fechaInicio} ${filtroExtra}
+      GROUP BY 1, 2 ORDER BY 1, 2`;
+    const gastosMensuales = await prisma.$queryRaw`
+      SELECT date_part('year', fecha)::int as y,
+             date_part('month', fecha)::int as m,
+             sum(monto)::float as total,
+             count(*)::int as cantidad,
+             min(moneda) as moneda
+      FROM gastos
+      WHERE "userId" = ${userId} AND fecha >= ${fechaInicio} ${filtroExtra}
+      GROUP BY 1, 2 ORDER BY 1, 2`;
 
     const mapMes = (rows) =>
       rows.map((r) => ({
@@ -429,6 +392,7 @@ const getDashboard = async (req, res) => {
 module.exports = {
   getIngresosGastos,
   getGastosCategoria,
+  getGastosMetodoPago,
   getEvolucion,
   getCuotasProgreso,
   getPrestamosProgreso,

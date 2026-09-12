@@ -160,29 +160,12 @@ const updateProfile = async (req, res) => {
       });
     }
 
-    const { name, currency, cuentaDefaultId } = req.body;
+    const { name, currency } = req.body;
     const userId = req.user._id;
 
     const data = {};
     if (name !== undefined) data.name = name;
     if (currency !== undefined) data.currency = currency;
-
-    if (cuentaDefaultId !== undefined) {
-      if (cuentaDefaultId === null || cuentaDefaultId === '') {
-        data.cuentaDefaultId = null;
-      } else {
-        const c = await prisma.cuenta.findFirst({
-          where: { id: cuentaDefaultId, userId, esActiva: true }
-        });
-        if (!c) {
-          return res.status(400).json({
-            success: false,
-            message: 'La cuenta predeterminada no es válida o está inactiva'
-          });
-        }
-        data.cuentaDefaultId = cuentaDefaultId;
-      }
-    }
 
     const userRow = await prisma.user.update({
       where: { id: userId },

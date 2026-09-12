@@ -4,12 +4,25 @@ const { newObjectId } = require('../src/domain/id');
 const { serializeGasto } = require('../src/adapters/persistence/serialize');
 const {
   userMini,
+  tarjetaMini,
+  tarjetaMiniMap,
   nestResumenGastos
 } = require('../src/application/queries/aggregateHelpers');
 const {
   resolveCuentaIdForMovimiento,
   validateCuentaParaMovimiento
 } = require('../src/application/usecases/cuentaUseCases');
+
+async function validateTarjetaParaGasto(userId, tarjetaId) {
+  if (!tarjetaId) return { valid: true };
+  const tarjeta = await prisma.tarjeta.findFirst({
+    where: { id: tarjetaId, userId }
+  });
+  if (!tarjeta) {
+    return { valid: false, message: 'Tarjeta no encontrada' };
+  }
+  return { valid: true, tarjeta };
+}
 
 const getGastos = async (req, res) => {
   try {
@@ -20,7 +33,8 @@ const getGastos = async (req, res) => {
       moneda,
       fechaInicio,
       fechaFin,
-      cuentaId
+      cuentaId,
+      tarjetaId
     } = req.query;
     const userId = req.user._id;
 
@@ -28,6 +42,7 @@ const getGastos = async (req, res) => {
     if (categoria) where.categoria = categoria;
     if (moneda) where.moneda = moneda;
     if (cuentaId) where.cuentaId = cuentaId;
+    if (tarjetaId) where.tarjetaId = tarjetaId;
     if (fechaInicio || fechaFin) {
       where.fecha = {};
       if (fechaInicio) where.fecha.gte = new Date(fechaInicio);
@@ -46,7 +61,10 @@ const getGastos = async (req, res) => {
     ]);
 
     const pop = await userMini(userId);
-    const gastos = rows.map((r) => serializeGasto(r, pop));
+    const tarjetas = await tarjetaMiniMap(rows.map((r) => r.tarjetaId));
+    const gastos = rows.map((r) =>
+      serializeGasto(r, pop, tarjetas.get(r.tarjetaId))
+    );
 
     res.json({
       success: true,
@@ -88,7 +106,7 @@ const getGastoById = async (req, res) => {
     const pop = await userMini(userId);
     res.json({
       success: true,
-      data: { gasto: serializeGasto(row, pop) }
+      data: { gasto: serializeGasto(row, pop, await tarjetaMini(row.tarjetaId)) }
     });
   } catch (error) {
     console.error('Error obteniendo gasto:', error);
@@ -118,21 +136,33 @@ const createGasto = async (req, res) => {
       descripcion,
       esRecurrente = false,
       metodoPago = 'efectivo',
-      cuentaId: cuentaIdBody
+      cuentaId: cuentaIdBody,
+      tarjetaId,
+      esPagoTarjeta = false
     } = req.body;
     const userId = req.user._id;
 
-    const cuentaId = await resolveCuentaIdForMovimiento(
-      userId,
-      cuentaIdBody,
-      moneda
-    );
+    // Un gasto pagado con tarjeta de crédito no sale de ninguna cuenta de
+    // efectivo/banco: se vuelve deuda de la tarjeta. Solo se resuelve/crea
+    // cuenta cuando el pago sí es un movimiento de cuenta real.
+    const esCredito = metodoPago === 'tarjeta_credito' && !esPagoTarjeta;
+    const cuentaId = esCredito
+      ? undefined
+      : await resolveCuentaIdForMovimiento(userId, cuentaIdBody, moneda);
 
     const check = await validateCuentaParaMovimiento(userId, cuentaId, moneda);
     if (!check.valid) {
       return res.status(400).json({
         success: false,
         message: check.message
+      });
+    }
+
+    const checkTarjeta = await validateTarjetaParaGasto(userId, tarjetaId);
+    if (!checkTarjeta.valid) {
+      return res.status(400).json({
+        success: false,
+        message: checkTarjeta.message
       });
     }
 
@@ -147,7 +177,9 @@ const createGasto = async (req, res) => {
         descripcion,
         esRecurrente,
         metodoPago,
-        cuentaId: cuentaId || undefined
+        cuentaId: cuentaId || undefined,
+        tarjetaId: tarjetaId || undefined,
+        esPagoTarjeta
       }
     });
 
@@ -155,9 +187,12 @@ const createGasto = async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Gasto creado exitosamente',
-      data: { gasto: serializeGasto(row, pop) }
+      data: { gasto: serializeGasto(row, pop, checkTarjeta.tarjeta ? await tarjetaMini(tarjetaId) : null) }
     });
   } catch (error) {
+    if (error.isCuentaRequerida) {
+      return res.status(400).json({ success: false, message: error.message });
+    }
     console.error('Error creando gasto:', error);
     res.status(500).json({
       success: false,
@@ -189,12 +224,14 @@ const updateGasto = async (req, res) => {
       'metodoPago',
       'cuotaId',
       'numeroCuotaPago',
-      'cuentaId'
+      'cuentaId',
+      'tarjetaId',
+      'esPagoTarjeta'
     ];
     const data = {};
     for (const k of allowed) {
       if (req.body[k] !== undefined) {
-        if (k === 'cuentaId' && req.body[k] === null) {
+        if ((k === 'cuentaId' || k === 'tarjetaId') && req.body[k] === null) {
           data[k] = null;
         } else {
           data[k] = k === 'fecha' ? new Date(req.body[k]) : req.body[k];
@@ -210,6 +247,13 @@ const updateGasto = async (req, res) => {
       });
     }
     const monedaFinal = data.moneda !== undefined ? data.moneda : existing.moneda;
+    const metodoPagoFinal =
+      data.metodoPago !== undefined ? data.metodoPago : existing.metodoPago;
+    const esPagoTarjetaFinal =
+      data.esPagoTarjeta !== undefined ? data.esPagoTarjeta : existing.esPagoTarjeta;
+    if (metodoPagoFinal === 'tarjeta_credito' && !esPagoTarjetaFinal) {
+      data.cuentaId = null;
+    }
     const cuentaIdFinal =
       data.cuentaId !== undefined ? data.cuentaId : existing.cuentaId;
     const check = await validateCuentaParaMovimiento(
@@ -221,6 +265,16 @@ const updateGasto = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: check.message
+      });
+    }
+
+    const tarjetaIdFinal =
+      data.tarjetaId !== undefined ? data.tarjetaId : existing.tarjetaId;
+    const checkTarjeta = await validateTarjetaParaGasto(userId, tarjetaIdFinal);
+    if (!checkTarjeta.valid) {
+      return res.status(400).json({
+        success: false,
+        message: checkTarjeta.message
       });
     }
 
@@ -241,7 +295,7 @@ const updateGasto = async (req, res) => {
     res.json({
       success: true,
       message: 'Gasto actualizado exitosamente',
-      data: { gasto: serializeGasto(row, pop) }
+      data: { gasto: serializeGasto(row, pop, await tarjetaMini(row.tarjetaId)) }
     });
   } catch (error) {
     console.error('Error actualizando gasto:', error);
@@ -322,7 +376,10 @@ const getResumenGastos = async (req, res) => {
     const { mes, año, fechaInicio, fechaFin, cuentaId, sinCuenta } = req.query;
     const userId = req.user._id;
 
-    const where = { userId };
+    // Un pago de tarjeta (esPagoTarjeta) no es un gasto nuevo: el gasto ya
+    // se contó cuando se hizo la compra con la tarjeta. Incluirlo aquí
+    // duplicaría el monto en "total gastado".
+    const where = { userId, esPagoTarjeta: false };
     // Scope por cuenta (mutuamente excluyente): cuentaId > sinCuenta
     if (cuentaId) {
       where.cuentaId = String(cuentaId);
@@ -418,7 +475,7 @@ const getDashboardGastos = async (req, res) => {
     const inicioMes = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
     inicioMes.setHours(0, 0, 0, 0);
 
-    const where = { userId, fecha: { gte: inicioMes } };
+    const where = { userId, esPagoTarjeta: false, fecha: { gte: inicioMes } };
     if (moneda) where.moneda = moneda;
 
     const totalMes = await prisma.gasto.groupBy({
@@ -484,6 +541,7 @@ const getDashboardGastos = async (req, res) => {
 
     const whereAnt = {
       userId,
+      esPagoTarjeta: false,
       fecha: { gte: inicioMesAnterior, lte: finMesAnterior }
     };
     if (moneda) whereAnt.moneda = moneda;

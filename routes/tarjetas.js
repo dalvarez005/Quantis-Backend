@@ -6,7 +6,8 @@ const {
   createTarjeta,
   updateTarjeta,
   deleteTarjeta,
-  getResumenTarjetas
+  getResumenTarjetas,
+  getResumenTarjeta
 } = require('../controllers/tarjetaController');
 const auth = require('../middleware/auth');
 
@@ -75,6 +76,7 @@ const tarjetaValidation = [
 // Rutas
 router.get('/', getTarjetas);
 router.get('/resumen', getResumenTarjetas);
+router.get('/:id/resumen', getResumenTarjeta);
 router.get('/:id', getTarjetaById);
 router.post('/', tarjetaValidation, createTarjeta);
 router.put('/:id', tarjetaValidation, updateTarjeta);

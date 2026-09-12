@@ -54,7 +54,17 @@ const gastoValidation = [
     .isString()
     .withMessage('cuentaId debe ser texto')
     .isLength({ min: 24, max: 24 })
-    .withMessage('cuentaId inválido')
+    .withMessage('cuentaId inválido'),
+  body('tarjetaId')
+    .optional({ nullable: true })
+    .isString()
+    .withMessage('tarjetaId debe ser texto')
+    .isLength({ min: 24, max: 24 })
+    .withMessage('tarjetaId inválido'),
+  body('esPagoTarjeta')
+    .optional()
+    .isBoolean()
+    .withMessage('esPagoTarjeta debe ser true o false')
 ];
 
 // Validaciones para consultas
@@ -95,7 +105,12 @@ const queryValidation = [
   query('sinCuenta')
     .optional()
     .isBoolean()
-    .withMessage('sinCuenta debe ser true o false')
+    .withMessage('sinCuenta debe ser true o false'),
+  query('tarjetaId')
+    .optional()
+    .isString()
+    .isLength({ min: 24, max: 24 })
+    .withMessage('tarjetaId inválido')
 ];
 
 // @route   GET /api/gastos

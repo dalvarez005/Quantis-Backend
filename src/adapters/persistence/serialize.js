@@ -25,8 +25,6 @@ function serializeUser(u) {
       ? { data: profileImageData, contentType: profileImageContentType }
       : undefined
   };
-  if (u.cuentaDefaultId) base.cuentaDefault = u.cuentaDefaultId;
-  delete base.cuentaDefaultId;
   if (base.role !== undefined && base.role !== null) {
     base.role = base.role === 'SUPER_ADMIN' ? 'super_admin' : 'user';
   }
@@ -48,13 +46,15 @@ function serializeIngreso(row, userMini) {
   return base;
 }
 
-function serializeGasto(row, userMini) {
+function serializeGasto(row, userMini, tarjetaMini) {
   const base = stripId(row);
   base.user = userMini || row.userId;
   if (row.cuotaId) base.cuota = row.cuotaId;
   delete base.cuotaId;
   if (row.cuentaId) base.cuenta = row.cuentaId;
   delete base.cuentaId;
+  if (row.tarjetaId) base.tarjeta = tarjetaMini || row.tarjetaId;
+  delete base.tarjetaId;
   delete base.userId;
   return base;
 }

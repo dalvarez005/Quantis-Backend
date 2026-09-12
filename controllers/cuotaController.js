@@ -11,33 +11,7 @@ const {
   serializeCuota,
   serializeGasto
 } = require('../src/adapters/persistence/serialize');
-const { userMini } = require('../src/application/queries/aggregateHelpers');
-
-async function tarjetaMini(id) {
-  if (!id) return null;
-  const t = await prisma.tarjeta.findUnique({
-    where: { id },
-    select: {
-      id: true,
-      nombre: true,
-      banco: true,
-      tipo: true,
-      limiteCredito: true,
-      saldoActual: true,
-      disponible: true
-    }
-  });
-  if (!t) return null;
-  return {
-    _id: t.id,
-    nombre: t.nombre,
-    banco: t.banco,
-    tipo: t.tipo,
-    limiteCredito: t.limiteCredito,
-    saldoActual: t.saldoActual,
-    disponible: t.disponible
-  };
-}
+const { userMini, tarjetaMini } = require('../src/application/queries/aggregateHelpers');
 
 const getCuotas = async (req, res) => {
   try {
@@ -483,7 +457,8 @@ const pagarCuota = async (req, res) => {
             metodoPago: cuota.tarjetaId ? 'tarjeta_credito' : 'efectivo',
             esRecurrente: false,
             cuotaId: cuota.id,
-            numeroCuotaPago: numeroCuota
+            numeroCuotaPago: numeroCuota,
+            tarjetaId: cuota.tarjetaId || undefined
           }
         });
         await serializeGasto(g, await userMini(userId));
