@@ -77,6 +77,76 @@ function calcularProximaFecha(fechaBase, frecuencia, diaPago = null, diaSemana =
 }
 
 /**
+ * Inversa de calcularProximaFecha: la fecha anterior según la frecuencia.
+ * Se usa para reconstruir fechas pasadas de una cuota anclando en `proximoPago`
+ * (que sí se mantiene correcto) en vez de recalcular desde `fechaInicio`.
+ */
+function calcularFechaAnterior(fechaBase, frecuencia, diaPago = null, diaSemana = null) {
+  const fecha = new Date(fechaBase);
+  fecha.setHours(0, 0, 0, 0);
+
+  switch (frecuencia) {
+    case 'diario':
+      fecha.setDate(fecha.getDate() - 1);
+      break;
+
+    case 'semanal':
+      if (diaSemana !== null) {
+        const diasDesdeAnterior = (fecha.getDay() - diaSemana + 7) % 7;
+        fecha.setDate(fecha.getDate() - (diasDesdeAnterior === 0 ? 7 : diasDesdeAnterior));
+      } else {
+        fecha.setDate(fecha.getDate() - 7);
+      }
+      break;
+
+    case 'quincenal':
+      fecha.setDate(fecha.getDate() - 15);
+      break;
+
+    case 'mensual':
+      if (diaPago !== null) {
+        fecha.setMonth(fecha.getMonth() - 1);
+        fecha.setDate(diaPago);
+        if (fecha.getDate() !== diaPago) {
+          fecha.setDate(0);
+        }
+      } else {
+        fecha.setMonth(fecha.getMonth() - 1);
+      }
+      break;
+
+    case 'trimestral':
+      if (diaPago !== null) {
+        fecha.setMonth(fecha.getMonth() - 3);
+        fecha.setDate(diaPago);
+        if (fecha.getDate() !== diaPago) {
+          fecha.setDate(0);
+        }
+      } else {
+        fecha.setMonth(fecha.getMonth() - 3);
+      }
+      break;
+
+    case 'anual':
+      if (diaPago !== null) {
+        fecha.setFullYear(fecha.getFullYear() - 1);
+        fecha.setDate(diaPago);
+        if (fecha.getDate() !== diaPago) {
+          fecha.setDate(0);
+        }
+      } else {
+        fecha.setFullYear(fecha.getFullYear() - 1);
+      }
+      break;
+
+    default:
+      throw new Error(`Frecuencia no válida: ${frecuencia}`);
+  }
+
+  return fecha;
+}
+
+/**
  * Calcula todas las fechas de generación entre dos fechas según la frecuencia
  * @param {Date} fechaInicio - Fecha de inicio
  * @param {Date} fechaFin - Fecha fin (o null para indefinido)
@@ -248,6 +318,37 @@ function proximoDiaPagoDesde(fechaRefStr, diaPago) {
   return new Date(y2, mNorm, Math.min(diaPago, last2));
 }
 
+/**
+ * Ciclo de facturación (corte) de una tarjeta que contiene `fechaRefStr`.
+ * `fin` es el corte en o después de fechaRef; `inicio` es el día siguiente
+ * al corte anterior (un mes antes de `fin`).
+ * @returns {{inicio: Date, fin: Date}}
+ */
+function cicloDeCorte(fechaRefStr, fechaCorte) {
+  // Mediodía (no medianoche ni 23:59:59.999): al serializar a ISO/UTC para el
+  // frontend, un extremo del día en hora LOCAL del proceso puede desbordar al
+  // día de calendario siguiente o anterior en UTC si el servidor no corre en
+  // UTC — el mismo bug que corrigió el frontend para fechaVencimiento de
+  // cuotas. Mediodía tiene margen de sobra para cualquier zona horaria real.
+  const fin = proximoDiaPagoDesde(fechaRefStr, fechaCorte);
+  fin.setHours(12, 0, 0, 0);
+
+  // Un mes antes de "fin", recortado al último día de ese mes si es más
+  // corto que fechaCorte (ej. corte=31: en febrero cae el 28/29, no se
+  // desborda a marzo). `new Date(y, m, 0)` da el último día del mes
+  // anterior a `m`.
+  const y = fin.getFullYear();
+  const m = fin.getMonth();
+  const ultimoDiaMesAnterior = new Date(y, m, 0).getDate();
+  const diaFinAnterior = Math.min(fechaCorte, ultimoDiaMesAnterior);
+  const finAnterior = new Date(y, m - 1, diaFinAnterior);
+
+  const inicio = new Date(finAnterior);
+  inicio.setDate(inicio.getDate() + 1);
+  inicio.setHours(12, 0, 0, 0);
+  return { inicio, fin };
+}
+
 /** Última fecha: `restantes` pagos desde proximo (inclusive). */
 function fechaUltimaCuotaDesdeProximo(proximo, frecuencia, restantes) {
   if (!proximo || restantes <= 0) return null;
@@ -260,45 +361,43 @@ function fechaUltimaCuotaDesdeProximo(proximo, frecuencia, restantes) {
 }
 
 /**
- * Fechas de cuotas para calendario: misma serie que con 0 pagadas (fechaInicio → fechaVencimiento),
- * priorizando fecha real en historialPagos por número de cuota. Así aparecen cuotas pasadas estimadas
- * aunque no exista movimiento en historial, y las futuras aunque proximoPago no venga en el select.
+ * Fechas de cuotas para calendario, ancladas en `proximoPago` (el campo que
+ * `pagarCuota` mantiene al día paso a paso y que ya se muestra correctamente
+ * en el detalle del plan), no en `fechaInicio`. Recalcular toda la serie
+ * desde `fechaInicio` la desalinea del calendario cuando ese campo no
+ * coincide exactamente con `proximoPago` (p. ej. planes con historial
+ * previo a un cambio de lógica de creación): la cuota `cuotasPagadas + 1`
+ * es por definición `proximoPago`; las anteriores se reconstruyen
+ * retrocediendo desde ahí, y las futuras avanzando desde ahí.
  */
 function obtenerFechasCuotaParaCalendario(cuota) {
   const total = Math.min(Math.max(1, cuota.cuotasTotal || 1), 48);
-  if (!cuota.fechaInicio || !cuota.fechaVencimiento) {
+  if (!cuota.proximoPago) {
     return [];
   }
-  const historial = Array.isArray(cuota.historialPagos) ? cuota.historialPagos : [];
-  const byNum = new Map();
-  for (const h of historial) {
-    if (h && typeof h.numeroCuota === 'number' && h.fecha) {
-      const d = new Date(h.fecha);
-      if (!Number.isNaN(d.getTime())) {
-        byNum.set(h.numeroCuota, d);
+  const frecuencia = cuota.frecuenciaPago || 'mensual';
+  const proximo = new Date(cuota.proximoPago);
+  proximo.setHours(0, 0, 0, 0);
+  const diaPago = proximo.getDate();
+  const diaSemana = proximo.getDay();
+
+  const pagadas = Math.max(0, Math.min(cuota.cuotasPagadas || 0, total));
+  const numeroProximo = pagadas + 1; // número de cuota al que corresponde `proximoPago`
+
+  const out = [];
+  for (let numeroCuota = 1; numeroCuota <= total; numeroCuota++) {
+    let fecha = new Date(proximo);
+    if (numeroCuota < numeroProximo) {
+      for (let i = 0; i < numeroProximo - numeroCuota; i++) {
+        fecha = calcularFechaAnterior(fecha, frecuencia, diaPago, diaSemana);
+      }
+    } else if (numeroCuota > numeroProximo) {
+      for (let i = 0; i < numeroCuota - numeroProximo; i++) {
+        fecha = calcularProximaFecha(fecha, frecuencia, diaPago, diaSemana);
       }
     }
-  }
-  const diaPago = new Date(cuota.fechaInicio).getDate();
-  const diaSemana = new Date(cuota.fechaInicio).getDay();
-  const fechasPago = calcularFechasEntre(
-    cuota.fechaInicio,
-    cuota.fechaVencimiento,
-    cuota.frecuenciaPago || 'mensual',
-    diaPago,
-    diaSemana
-  );
-  const n = Math.min(total, fechasPago.length);
-  const out = [];
-  for (let i = 0; i < n; i++) {
-    const numeroCuota = i + 1;
-    const dHist = byNum.get(numeroCuota);
-    const dSynth = fechasPago[i];
-    const fecha = dHist || dSynth;
-    if (!fecha) continue;
-    const copy = new Date(fecha);
-    copy.setHours(0, 0, 0, 0);
-    out.push({ fecha: copy, numeroCuota });
+    fecha.setHours(0, 0, 0, 0);
+    out.push({ fecha, numeroCuota });
   }
   return out;
 }
@@ -312,6 +411,7 @@ module.exports = {
   diasHasta,
   obtenerRangoMensual,
   proximoDiaPagoDesde,
+  cicloDeCorte,
   fechaUltimaCuotaDesdeProximo,
   obtenerFechasCuotaParaCalendario
 };

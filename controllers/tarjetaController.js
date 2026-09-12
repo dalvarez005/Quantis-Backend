@@ -3,6 +3,7 @@ const prisma = require('../src/adapters/persistence/prismaClient');
 const { newObjectId } = require('../src/domain/id');
 const { serializeTarjeta } = require('../src/adapters/persistence/serialize');
 const { userMini } = require('../src/application/queries/aggregateHelpers');
+const { cicloDeCorte, proximoDiaPagoDesde } = require('../utils/fechaUtils');
 
 const getTarjetas = async (req, res) => {
   try {
@@ -240,6 +241,21 @@ const deleteTarjeta = async (req, res) => {
       });
     }
 
+    // Gastos sueltos (compras del día a día) y pagos a la tarjeta también la
+    // referencian; si se borra la tarjeta esos registros quedarían
+    // silenciosamente desligados (onDelete: SetNull) sin que nadie lo note,
+    // igual que pasaba antes con las cuentas.
+    const gastosAsociados = await prisma.gasto.count({
+      where: { tarjetaId: id, userId }
+    });
+
+    if (gastosAsociados > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `No se puede eliminar la tarjeta porque tiene ${gastosAsociados} gasto(s) o pago(s) asociados.`
+      });
+    }
+
     const del = await prisma.tarjeta.deleteMany({ where: { id, userId } });
 
     if (del.count === 0) {
@@ -255,6 +271,114 @@ const deleteTarjeta = async (req, res) => {
     });
   } catch (error) {
     console.error('Error eliminando tarjeta:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+};
+
+/**
+ * Deuda real de la tarjeta + desglose por ciclo de corte (estado de cuenta).
+ * `deudaTotal` = saldo base (manual, capturado al crear la tarjeta) + todos
+ * los gastos con esta tarjeta (cuotas y sueltos) - todos los pagos hechos a
+ * la tarjeta. Se calcula siempre desde el detalle de gastos (no desde un
+ * contador aparte) para que nunca se desincronice de la realidad.
+ */
+const getResumenTarjeta = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+    const numCiclos = Math.min(12, Math.max(1, parseInt(req.query.ciclos, 10) || 6));
+
+    const tarjeta = await prisma.tarjeta.findFirst({ where: { id, userId } });
+    if (!tarjeta) {
+      return res.status(404).json({
+        success: false,
+        message: 'Tarjeta no encontrada'
+      });
+    }
+
+    const gastos = await prisma.gasto.findMany({
+      where: { userId, tarjetaId: id },
+      orderBy: { fecha: 'asc' },
+      select: {
+        id: true,
+        monto: true,
+        fecha: true,
+        cuotaId: true,
+        esPagoTarjeta: true,
+        descripcion: true,
+        categoria: true
+      }
+    });
+
+    const cargos = gastos.filter((g) => !g.esPagoTarjeta);
+    const pagos = gastos.filter((g) => g.esPagoTarjeta);
+    const totalCargos = cargos.reduce((s, g) => s + g.monto, 0);
+    const totalPagos = pagos.reduce((s, g) => s + g.monto, 0);
+    const deudaTotal = Math.max(0, (tarjeta.saldoActual || 0) + totalCargos - totalPagos);
+    const disponible =
+      tarjeta.limiteCredito != null ? Math.max(0, tarjeta.limiteCredito - deudaTotal) : null;
+
+    let ciclos = [];
+    if (tarjeta.tipo === 'credito' && tarjeta.fechaCorte) {
+      const hoyStr = new Date().toISOString().slice(0, 10);
+      let finCursorStr = hoyStr;
+      for (let i = 0; i < numCiclos; i++) {
+        const { inicio, fin } = cicloDeCorte(finCursorStr, tarjeta.fechaCorte);
+        // inicio/fin quedan a mediodía (para que se sirvan bien al frontend);
+        // para filtrar por día completo se amplía a los extremos del día acá,
+        // sin tocar los valores que se devuelven en la respuesta.
+        const inicioDia = new Date(inicio);
+        inicioDia.setHours(0, 0, 0, 0);
+        const finDia = new Date(fin);
+        finDia.setHours(23, 59, 59, 999);
+        const enCiclo = cargos.filter((g) => {
+          const f = new Date(g.fecha);
+          return f >= inicioDia && f <= finDia;
+        });
+        const montoCuotas = enCiclo
+          .filter((g) => g.cuotaId)
+          .reduce((s, g) => s + g.monto, 0);
+        const montoSueltos = enCiclo
+          .filter((g) => !g.cuotaId)
+          .reduce((s, g) => s + g.monto, 0);
+        // Fecha de pago real de este ciclo: no es "fin" (esa es la fecha de
+        // corte) - el pago cae en el día `diaPago` de la tarjeta, en o
+        // después del corte.
+        const fechaPago = tarjeta.diaPago != null
+          ? proximoDiaPagoDesde(fin.toISOString().slice(0, 10), tarjeta.diaPago)
+          : null;
+        ciclos.push({
+          inicio,
+          fin,
+          fechaPago,
+          esActual: i === 0,
+          total: montoCuotas + montoSueltos,
+          cuotas: montoCuotas,
+          sueltos: montoSueltos,
+          cantidadGastos: enCiclo.length
+        });
+        const antesDelInicio = new Date(inicio);
+        antesDelInicio.setDate(antesDelInicio.getDate() - 1);
+        finCursorStr = antesDelInicio.toISOString().slice(0, 10);
+      }
+      ciclos.reverse();
+    }
+
+    res.json({
+      success: true,
+      data: {
+        tarjeta: serializeTarjeta(tarjeta),
+        deudaTotal,
+        disponible,
+        cicloActual: ciclos.length ? ciclos[ciclos.length - 1] : null,
+        ciclos
+      }
+    });
+  } catch (error) {
+    console.error('Error obteniendo resumen de tarjeta:', error);
     res.status(500).json({
       success: false,
       message: 'Error interno del servidor'
@@ -297,5 +421,6 @@ module.exports = {
   createTarjeta,
   updateTarjeta,
   deleteTarjeta,
-  getResumenTarjetas
+  getResumenTarjetas,
+  getResumenTarjeta
 };

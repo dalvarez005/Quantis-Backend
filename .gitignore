@@ -137,3 +137,7 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Claude Code / graphify local tooling (machine-specific, not shared)
+.claude/
+graphify-out/

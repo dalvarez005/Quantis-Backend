@@ -22,19 +22,9 @@ function update(id, data) {
   return prisma.cuenta.update({ where: { id }, data });
 }
 
-async function softDelete(id, userId) {
-  const row = await prisma.cuenta.findFirst({ where: { id, userId } });
-  if (!row) return null;
-  return prisma.cuenta.update({
-    where: { id },
-    data: { esActiva: false }
-  });
-}
-
 module.exports = {
   listByUser,
   findByIdForUser,
   create,
-  update,
-  softDelete
+  update
 };

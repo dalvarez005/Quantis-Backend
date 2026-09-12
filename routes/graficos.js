@@ -3,6 +3,7 @@ const { query } = require('express-validator');
 const {
   getIngresosGastos,
   getGastosCategoria,
+  getGastosMetodoPago,
   getEvolucion,
   getCuotasProgreso,
   getPrestamosProgreso,
@@ -40,7 +41,22 @@ const queryValidation = [
   query('tipo')
     .optional()
     .isIn(['recibido', 'otorgado'])
-    .withMessage('El tipo debe ser "recibido" o "otorgado"')
+    .withMessage('El tipo debe ser "recibido" o "otorgado"'),
+  query('fechaInicio')
+    .optional()
+    .isISO8601()
+    .withMessage('fechaInicio debe ser una fecha válida'),
+  query('fechaFin')
+    .optional()
+    .isISO8601()
+    .withMessage('fechaFin debe ser una fecha válida'),
+  query('cuentaId')
+    .optional()
+    .isString(),
+  query('sinCuenta')
+    .optional()
+    .isBoolean()
+    .withMessage('sinCuenta debe ser true o false')
 ];
 
 // @route   GET /api/graficos/ingresos-gastos
@@ -48,6 +64,9 @@ router.get('/ingresos-gastos', queryValidation, getIngresosGastos);
 
 // @route   GET /api/graficos/gastos-categoria
 router.get('/gastos-categoria', queryValidation, getGastosCategoria);
+
+// @route   GET /api/graficos/gastos-metodo-pago
+router.get('/gastos-metodo-pago', queryValidation, getGastosMetodoPago);
 
 // @route   GET /api/graficos/evolucion
 router.get('/evolucion', queryValidation, getEvolucion);

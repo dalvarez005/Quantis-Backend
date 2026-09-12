@@ -56,12 +56,13 @@ const createCuenta = async (req, res) => {
         errors: errors.array()
       });
     }
-    const { nombre, moneda } = req.body;
+    const { nombre, moneda, saldoInicial } = req.body;
     const userId = req.user._id;
     const row = await cuentaUseCases.createCuenta(userId, {
       id: newObjectId(),
       nombre,
-      moneda
+      moneda,
+      saldoInicial
     });
     res.status(201).json({
       success: true,
@@ -89,17 +90,19 @@ const updateCuenta = async (req, res) => {
     }
     const { id } = req.params;
     const userId = req.user._id;
-    const allowed = ['nombre', 'moneda', 'esActiva'];
+    const allowed = ['nombre', 'moneda', 'esActiva', 'saldoInicial'];
     const data = {};
     for (const k of allowed) {
       if (req.body[k] !== undefined) data[k] = req.body[k];
     }
+
     if (Object.keys(data).length === 0) {
       return res.status(400).json({
         success: false,
         message: 'No hay datos para actualizar'
       });
     }
+
     const row = await cuentaUseCases.updateCuenta(id, userId, data);
     if (!row) {
       return res.status(404).json({
@@ -107,6 +110,7 @@ const updateCuenta = async (req, res) => {
         message: 'Cuenta no encontrada'
       });
     }
+
     res.json({
       success: true,
       message: 'Cuenta actualizada exitosamente',
@@ -125,8 +129,39 @@ const deleteCuenta = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user._id;
-    const row = await cuentaUseCases.softDeleteCuenta(id, userId);
-    if (!row) {
+    const result = await cuentaUseCases.softDeleteCuenta(id, userId);
+    if (!result) {
+      return res.status(404).json({
+        success: false,
+        message: 'Cuenta no encontrada'
+      });
+    }
+    const { cuenta, gastosEliminados, ingresosEliminados } = result;
+    res.json({
+      success: true,
+      message: 'Cuenta eliminada exitosamente',
+      data: {
+        cuenta: serializeCuenta(cuenta),
+        gastosEliminados,
+        ingresosEliminados
+      }
+    });
+  } catch (error) {
+    console.error('Error eliminando cuenta:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+};
+
+/** Cuántos gastos/ingresos se perderían si se elimina esta cuenta (para confirmar antes de borrar). */
+const getCuentaMovimientosCount = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+    const counts = await cuentaUseCases.contarMovimientosDeCuenta(id, userId);
+    if (!counts) {
       return res.status(404).json({
         success: false,
         message: 'Cuenta no encontrada'
@@ -134,11 +169,10 @@ const deleteCuenta = async (req, res) => {
     }
     res.json({
       success: true,
-      message: 'Cuenta desactivada exitosamente',
-      data: { cuenta: serializeCuenta(row) }
+      data: counts
     });
   } catch (error) {
-    console.error('Error desactivando cuenta:', error);
+    console.error('Error contando movimientos de la cuenta:', error);
     res.status(500).json({
       success: false,
       message: 'Error interno del servidor'
@@ -154,7 +188,7 @@ const getCuentasBalances = async (req, res) => {
   try {
     const userId = req.user._id;
 
-    const [ingresosAgg, gastosAgg] = await Promise.all([
+    const [ingresosAgg, gastosAgg, cuentas] = await Promise.all([
       prisma.ingreso.groupBy({
         by: ['cuentaId', 'moneda'],
         where: { userId },
@@ -164,6 +198,10 @@ const getCuentasBalances = async (req, res) => {
         by: ['cuentaId', 'moneda'],
         where: { userId },
         _sum: { monto: true }
+      }),
+      prisma.cuenta.findMany({
+        where: { userId },
+        select: { id: true, moneda: true, saldoInicial: true }
       })
     ]);
 
@@ -195,13 +233,29 @@ const getCuentasBalances = async (req, res) => {
       map.set(k, prev);
     });
 
-    const balances = Array.from(map.values()).map((b) => ({
-      cuentaId: b.cuentaId,
-      moneda: b.moneda,
-      ingresos: b.ingresos,
-      gastos: b.gastos,
-      balance: b.ingresos - b.gastos
-    }));
+    // Asegura que toda cuenta con saldo inicial aparezca aunque aún no tenga
+    // ingresos/gastos registrados (si no, quedaría fuera del mapa y su saldo
+    // inicial nunca se vería reflejado).
+    const saldoInicialPorCuenta = new Map();
+    cuentas.forEach((c) => {
+      saldoInicialPorCuenta.set(c.id, Number(c.saldoInicial || 0));
+      const k = mergeKey(c.id, c.moneda);
+      if (!map.has(k)) {
+        map.set(k, { cuentaId: c.id, moneda: c.moneda, ingresos: 0, gastos: 0 });
+      }
+    });
+
+    const balances = Array.from(map.values()).map((b) => {
+      const saldoInicial = saldoInicialPorCuenta.get(b.cuentaId) || 0;
+      return {
+        cuentaId: b.cuentaId,
+        moneda: b.moneda,
+        saldoInicial,
+        ingresos: b.ingresos,
+        gastos: b.gastos,
+        balance: saldoInicial + b.ingresos - b.gastos
+      };
+    });
 
     res.json({
       success: true,
@@ -222,5 +276,6 @@ module.exports = {
   getCuentasBalances,
   createCuenta,
   updateCuenta,
-  deleteCuenta
+  deleteCuenta,
+  getCuentaMovimientosCount
 };

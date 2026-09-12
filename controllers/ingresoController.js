@@ -156,6 +156,9 @@ const createIngreso = async (req, res) => {
       data: { ingreso: serializeIngreso(row, pop) }
     });
   } catch (error) {
+    if (error.isCuentaRequerida) {
+      return res.status(400).json({ success: false, message: error.message });
+    }
     console.error('Error creando ingreso:', error);
     res.status(500).json({
       success: false,
